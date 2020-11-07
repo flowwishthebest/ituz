@@ -7,118 +7,8 @@ const { howGoodTheArticle } = require('./how-good-the-article');
 
 require('dotenv').config();
 
-const dataDir = 'docs';
-const xmlFileName = 'rufallout_pages_current_small.xml';
-
-const filepath = path.join(process.cwd(), dataDir, xmlFileName);
-
-const xmlParser = new xmldom.DOMParser();
-
-console.log(process.env.POSTGRES_USER);
-
-const pgClient = new pg.Client({
-    host: process.env.POSTGRES_HOST,
-    user: process.env.POSTGRES_USER,
-    password: process.env.POSTGRES_PASSWORD,
-    port: process.env.POSTGRES_PORT,
-    database: process.env.POSTGRES_DB,
-});
-
-async function main() {
-
-    const xmlFile = await fs.promises.readFile(filepath,{ encoding: 'utf-8' });
-
-    const processedXmlFile = xmlFile.replace(/\n/g, '');
-
-    const xmlDoc = xmlParser.parseFromString(processedXmlFile);
-
-    console.log(xmlFile.slice(0, 100), 'totalFileSize', processedXmlFile.length);
-
-    await pgClient.connect();
-
-    truncatePreviousParsed(pgClient);
-
-    const okWords = await loadOkWords(pgClient);
-    const badWords = await loadBadWords(pgClient);
-    const heroNames = await loadHeroNames(pgClient);
-
-    console.log('okWords', okWords)
-    console.log('badWords', badWords);
-    console.log('heroesNames', heroesNames);
-
-    const PAGES_XPATH_EXPR = '//page';
-
-    const result = xpath.evaluate(
-        PAGES_XPATH_EXPR,
-        xmlDoc, 
-        null,
-        xpath.XPathResult.ANY_TYPE,
-        null,
-    );
-
-    const CATEGORIES_REGEXP = /\[\[Категория:[\s\S]+\]\]/gi;
-    const TAGS_REGEXP = /^\[\[(.*)\]\]/gi;
-
-    let node = result.iterateNext();
-
-    while (node) {
-        const title = xpath.select1('string(title/text())', node);
-        const text = xpath.select1('string(revision/text/text())', node);
-        const revisionNo = xpath.select1('string(revision/id/text())', node);
-        const revisionTs = xpath.select1('string(revision/timestamp/text())', node);
-        const comment = xpath.select1('string(revision/comment/text())', node);
-
-        const categories = text.match(CATEGORIES_REGEXP) || [];
-
-        const tags = text.match(TAGS_REGEXP) || [];
-
-        let _okWords = [];
-        let _badWords = [];
-        const _heroes = new Map();
-
-        text.split(' ').forEach((w) => {
-            const lcWord = w.toLowerCase();
-
-            if (okWords.includes(lcWord)) {
-                _okWords.push(lcWord);
-            } else if (badWords.includes(lcWord)) {
-                _badWords.push(lcWord);
-            } else if (isHeroName(w)) {
-                if (_heroes.has(w)) {
-                    const score = _heroes.get(w);
-                    _heroes.set(w, score + 1);
-                } else {
-                    _heroes.set(w, 1);
-                }
-            }
-        })
-
-        const positivityIdx = _okWords.length - _badWords.length;
-
-        const conclusion = getConclusion(positivityIdx, _heroes);
-
-        // console.log(_heroes, _okWords, _badWords, conclusion, positivityIdx);
-
-        await insertParsedData(pgClient,
-            title, text, revisionNo, revisionTs, comment,
-            tags, categories, _badWords.join(', '),
-            _okWords.join(', '), positivityIdx,
-            Array.from(_heroes.entries()).map(([k, v]) => `${k}:${v}`).join(', '),
-            conclusion,
-        );
-     
-        node = result.iterateNext();
-    }
-
-    await pgClient.end();
-}
-
-main().catch((err) => {
-    console.error(err);
-});
-
-function isHeroName(word) {
-    return heroNames.some((n) => n === word);
+function isHeroName(heronames, word) {
+    return heronames.some((n) => n === word);
 }
 
 function aboutWhatHeroesTheArticle(heroes) {
@@ -185,3 +75,111 @@ async function insertParsedData(
 async function truncatePreviousParsed(client) {
     await client.query('DELETE FROM parsed_xml_data');
 }
+
+const dataDir = 'docs';
+const xmlFileName = 'rufallout_pages_current_small.xml';
+
+const filepath = path.join(process.cwd(), dataDir, xmlFileName);
+
+const xmlParser = new xmldom.DOMParser();
+
+const pgClient = new pg.Client({
+    host: process.env.POSTGRES_HOST,
+    user: process.env.POSTGRES_USER,
+    password: process.env.POSTGRES_PASSWORD,
+    port: process.env.POSTGRES_PORT,
+    database: process.env.POSTGRES_DB,
+});
+
+async function main() {
+
+    const xmlFile = await fs.promises.readFile(filepath,{ encoding: 'utf-8' });
+
+    const processedXmlFile = xmlFile.replace(/\n/g, '');
+
+    const xmlDoc = xmlParser.parseFromString(processedXmlFile);
+
+    console.log(xmlFile.slice(0, 100), 'totalFileSize', processedXmlFile.length);
+
+    await pgClient.connect();
+
+    await truncatePreviousParsed(pgClient);
+
+    const okWords = await loadOkWords(pgClient);
+    const badWords = await loadBadWords(pgClient);
+    const heroNames = await loadHeroNames(pgClient);
+
+    console.log('okWords', okWords)
+    console.log('badWords', badWords);
+    console.log('heroesNames', heroesNames);
+
+    const PAGES_XPATH_EXPR = '//page';
+
+    const result = xpath.evaluate(
+        PAGES_XPATH_EXPR,
+        xmlDoc, 
+        null,
+        xpath.XPathResult.ANY_TYPE,
+        null,
+    );
+
+    const CATEGORIES_REGEXP = /\[\[Категория:[\s\S]+\]\]/gi;
+    const TAGS_REGEXP = /^\[\[(.*)\]\]/gi;
+
+    let node = result.iterateNext();
+
+    while (node) {
+        const title = xpath.select1('string(title/text())', node);
+        const text = xpath.select1('string(revision/text/text())', node);
+        const revisionNo = xpath.select1('string(revision/id/text())', node);
+        const revisionTs = xpath.select1('string(revision/timestamp/text())', node);
+        const comment = xpath.select1('string(revision/comment/text())', node);
+
+        const categories = text.match(CATEGORIES_REGEXP) || [];
+
+        const tags = text.match(TAGS_REGEXP) || [];
+
+        let _okWords = [];
+        let _badWords = [];
+        const _heroes = new Map();
+
+        text.split(' ').forEach((w) => {
+            const lcWord = w.toLowerCase();
+
+            if (okWords.includes(lcWord)) {
+                _okWords.push(lcWord);
+            } else if (badWords.includes(lcWord)) {
+                _badWords.push(lcWord);
+            } else if (isHeroName(heroNames, w)) {
+                if (_heroes.has(w)) {
+                    const score = _heroes.get(w);
+                    _heroes.set(w, score + 1);
+                } else {
+                    _heroes.set(w, 1);
+                }
+            }
+        })
+
+        const positivityIdx = _okWords.length - _badWords.length;
+
+        const conclusion = getConclusion(positivityIdx, _heroes);
+
+        // console.log(_heroes, _okWords, _badWords, conclusion, positivityIdx);
+
+        await insertParsedData(pgClient,
+            title, text, revisionNo, revisionTs, comment,
+            tags, categories, _badWords.join(', '),
+            _okWords.join(', '), positivityIdx,
+            Array.from(_heroes.entries()).map(([k, v]) => `${k}:${v}`).join(', '),
+            conclusion,
+        );
+     
+        node = result.iterateNext();
+    }
+
+    await pgClient.end();
+}
+
+main().catch((err) => {
+    console.error(err);
+});

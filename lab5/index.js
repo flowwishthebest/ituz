@@ -7,10 +7,6 @@ const { howGoodTheArticle } = require('./how-good-the-article');
 
 require('dotenv').config();
 
-function isHeroName(heronames, word) {
-    return heronames.some((n) => n === word);
-}
-
 function aboutWhatHeroesTheArticle(heroes) {
     let n = 'unknown';
     let score = 0;
@@ -47,7 +43,7 @@ async function loadOkWords(client) {
 
 async function loadHeroNames(client) {
     const result = await client.query('SELECT name from hero_name');
-    return result.rows;
+    return result.rows.map(({ name }) => name);
 }
 
 async function insertParsedData(
@@ -111,7 +107,7 @@ async function main() {
 
     console.log('okWords', okWords)
     console.log('badWords', badWords);
-    console.log('heroesNames', heroesNames);
+    console.log('heroesNames', heroNames);
 
     const PAGES_XPATH_EXPR = '//page';
 
@@ -143,22 +139,8 @@ async function main() {
         let _badWords = [];
         const _heroes = new Map();
 
-        text.split(' ').forEach((w) => {
-            const lcWord = w.toLowerCase();
-
-            if (okWords.includes(lcWord)) {
-                _okWords.push(lcWord);
-            } else if (badWords.includes(lcWord)) {
-                _badWords.push(lcWord);
-            } else if (isHeroName(heroNames, w)) {
-                if (_heroes.has(w)) {
-                    const score = _heroes.get(w);
-                    _heroes.set(w, score + 1);
-                } else {
-                    _heroes.set(w, 1);
-                }
-            }
-        })
+        identifyOkAndBadWords(text, okWords, badWords, _okWords, _badWords);
+        identifyHeroes(text, heroNames, _heroes);
 
         const positivityIdx = _okWords.length - _badWords.length;
 
@@ -168,7 +150,7 @@ async function main() {
 
         await insertParsedData(pgClient,
             title, text, revisionNo, revisionTs, comment,
-            tags, categories, _badWords.join(', '),
+            tags, processCategories(categories), _badWords.join(', '),
             _okWords.join(', '), positivityIdx,
             Array.from(_heroes.entries()).map(([k, v]) => `${k}:${v}`).join(', '),
             conclusion,
@@ -178,6 +160,41 @@ async function main() {
     }
 
     await pgClient.end();
+}
+
+function identifyOkAndBadWords(text, okWordsIn, badWordsIn, okWordsOut, badWordsOut) {
+    text.split(' ').forEach((w) => {
+        const lcWord = w.toLowerCase();
+
+        if (okWordsIn.includes(lcWord)) {
+            okWordsOut.push(w);
+        }
+
+        if (badWordsIn.includes(lcWord)) {
+            badWordsOut.push(w);
+        }
+    });
+}
+
+function identifyHeroes(text, heroesIn, heroesOut) {
+    text.split(' ').forEach((w) => {
+        const isHeroName = heroesIn.some((h) => h === w);
+
+        if (isHeroName) {
+            if (heroesOut.has(w)) {
+                const score = heroesOut.get(w);
+                heroesOut.set(w, score + 1);
+            } else {
+                heroesOut.set(w, 1);
+            }
+        }
+    });
+}
+
+function processCategories(categories) {
+    return categories
+        .map((cats) => cats.replace(/[\]\[]/gi, '').split('Категория:').filter((c) => c.length))
+        .join(', ');
 }
 
 main().catch((err) => {

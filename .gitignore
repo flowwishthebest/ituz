@@ -1,4 +1,5 @@
 node_modules/
 **/**/docs
 **/**/data
-**/**/postgres-db
+postgres-db/
+postgres-db/data

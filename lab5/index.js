@@ -3,6 +3,7 @@ const xmldom = require('xmldom');
 const path = require('path');
 const fs = require('fs');
 const pg = require('pg');
+const { howGoodTheArticle } = require('./how-good-the-article');
 
 require('dotenv').config();
 
@@ -25,24 +26,25 @@ const pgClient = new pg.Client({
 
 async function main() {
 
-    await pgClient.connect();
-
-    let xmlFile;
-    try {
-        xmlFile = await fs.promises.readFile(
-            filepath,
-            { encoding: 'utf-8' },
-        );
-    } catch (err) {
-        console.error(err);
-        process.exit(1);
-    }
+    const xmlFile = await fs.promises.readFile(filepath,{ encoding: 'utf-8' });
 
     const processedXmlFile = xmlFile.replace(/\n/g, '');
-    
+
     const xmlDoc = xmlParser.parseFromString(processedXmlFile);
-    
+
     console.log(xmlFile.slice(0, 100), 'totalFileSize', processedXmlFile.length);
+
+    await pgClient.connect();
+
+    truncatePreviousParsed(pgClient);
+
+    const okWords = await loadOkWords(pgClient);
+    const badWords = await loadBadWords(pgClient);
+    const heroNames = await loadHeroNames(pgClient);
+
+    console.log('okWords', okWords)
+    console.log('badWords', badWords);
+    console.log('heroesNames', heroesNames);
 
     const PAGES_XPATH_EXPR = '//page';
 
@@ -67,65 +69,119 @@ async function main() {
         const comment = xpath.select1('string(revision/comment/text())', node);
 
         const categories = text.match(CATEGORIES_REGEXP) || [];
+
         const tags = text.match(TAGS_REGEXP) || [];
 
-        let okWordsCount = 0;
-        let badWordsCount = 0;
+        let _okWords = [];
+        let _badWords = [];
+        const _heroes = new Map();
 
-        const positivityIdx = okWordsCount - badWordsCount;
+        text.split(' ').forEach((w) => {
+            const lcWord = w.toLowerCase();
 
-        const heroes = [];
+            if (okWords.includes(lcWord)) {
+                _okWords.push(lcWord);
+            } else if (badWords.includes(lcWord)) {
+                _badWords.push(lcWord);
+            } else if (isHeroName(w)) {
+                if (_heroes.has(w)) {
+                    const score = _heroes.get(w);
+                    _heroes.set(w, score + 1);
+                } else {
+                    _heroes.set(w, 1);
+                }
+            }
+        })
+
+        const positivityIdx = _okWords.length - _badWords.length;
+
+        const conclusion = getConclusion(positivityIdx, _heroes);
+
+        // console.log(_heroes, _okWords, _badWords, conclusion, positivityIdx);
+
+        await insertParsedData(pgClient,
+            title, text, revisionNo, revisionTs, comment,
+            tags, categories, _badWords.join(', '),
+            _okWords.join(', '), positivityIdx,
+            Array.from(_heroes.entries()).map(([k, v]) => `${k}:${v}`).join(', '),
+            conclusion,
+        );
      
         node = result.iterateNext();
     }
 
     await pgClient.end();
-
-    
-    // console.log(titles.slice(0, 5));
 }
 
 main().catch((err) => {
     console.error(err);
 });
 
-const badWords = [];
-const okWords = [];
+function isHeroName(word) {
+    return heroNames.some((n) => n === word);
+}
 
-const howGoodTheArticle = (positivityIdx) => {
-    if (positivityIdx === 0) {
-        return 'Статья на "Удовлетворительно"';
+function aboutWhatHeroesTheArticle(heroes) {
+    let n = 'unknown';
+    let score = 0;
+    for (const [name, count] of heroes.entries()) {
+        if (count > score) {
+            n = name;
+            score = count
+        }
     }
-    if (positivityIdx === 1) {
-        return '';
+
+    if (score > 0) {
+        return 'Эта статья про ' + n;
+    } else {
+        return 'Эта статья ни о ком';
     }
-};
+}  
 
+function getConclusion(posIdx, heroes) {
+    const aboutPositivity = howGoodTheArticle(posIdx);
+    const aboutHero = aboutWhatHeroesTheArticle(heroes);
 
-/**
- * Извлечь в таблицу поля по отдельным колонкам:
+    return aboutPositivity + ' ' + aboutHero;
+}
 
-1. Заголовок. !
-2. Текст. !
-3. Номер ревизии. !
-4. Время ревизии в формате timestamp (используйте, при необходимости, regexp) !
-5. Комментарий. !
-Добавьте дополнительные поля в таблицу и загрузите в них:
-1. Список тегов ([[Очки здоровья]], [[Выносливость]] и пр.). !
-2. Список категорий ([[Категория:Бой]], [[Категория:Производные характеристики Fallout]]..) !
-3. Список негативных слов в статье (см.ниже).
-4. Список позитивных слов в статье (см.ниже).
-5. Индекс позитива числом (см.ниже).
-6. Список героев.
-7. Вывод (см. ниже)
+async function loadBadWords(client) {
+    const result = await client.query('SELECT value from bad_word');
+    return result.rows.map(({ value }) => value);
+}
 
-Добавьте словари (в любой форме реализации) плохих слов (яд, отравление, ...) и хороших (выздоровел, молодец...) и в специальное поле укажите индекс позитива цифрой (Пример: индекс 5, когда 6 хороших слова и 1 плохое) и в поле "вывод" напишите словами содержащими (очень плохо, плохо, удовлетворительно, хорошо, отлично) в зависимости от индекса.
+async function loadOkWords(client) {
+    const result = await client.query('SELECT value from ok_word');
+    return result.rows.map(({ value }) => value);
+}
 
-Добавьте словарь определяющий имена героев. В поле вывод фразу "Статья про ..." указав самого популярного (часто стречающегося) героя на странице.
+async function loadHeroNames(client) {
+    const result = await client.query('SELECT name from hero_name');
+    return result.rows;
+}
 
-Проверить вручную работу алгоритма отсортировав по индексу позитива.
+async function insertParsedData(
+    client,
+    header, txt, revision_no, revision_ts,
+    comment, tags, categories, badWords, okWords,
+    positivityIdx, heroes, conclusion,
+) {
 
+    const query = `
+    INSERT INTO parsed_xml_data (
+        header, txt, revision_no, revision_ts,
+        comment, tags, categories, bad_words, ok_words,
+        positivity_idx, heroes, conclusion)
+    VALUES ($1, $2, $3, $4, $5, $6,
+        $7, $8, $9, $10, $11, $12)`;
 
+    await client.query(query, [
+        header, txt, revision_no, revision_ts,
+        comment, tags, categories, badWords, okWords,
+        positivityIdx, heroes, conclusion,
+    ]);
+}
 
-В качестве ответа приложить ссылку на sql-файл выполняющий задание.
- */
+async function truncatePreviousParsed(client) {
+    await client.query('DELETE FROM parsed_xml_data');
+}

@@ -50,21 +50,23 @@ async function insertParsedData(
     client,
     header, txt, revision_no, revision_ts,
     comment, tags, categories, badWords, okWords,
-    positivityIdx, heroes, conclusion,
+    positivityIdx, heroes, conclusion, okWordsCount, badWordsCount,
 ) {
 
     const query = `
     INSERT INTO parsed_xml_data (
         header, txt, revision_no, revision_ts,
         comment, tags, categories, bad_words, ok_words,
-        positivity_idx, heroes, conclusion)
+        positivity_idx, heroes, conclusion,
+        ok_words_count, bad_words_count)
     VALUES ($1, $2, $3, $4, $5, $6,
-        $7, $8, $9, $10, $11, $12)`;
+        $7, $8, $9, $10, $11, $12, $13, $14)`;
 
     await client.query(query, [
         header, txt, revision_no, revision_ts,
         comment, tags, categories, badWords, okWords,
-        positivityIdx, heroes, conclusion,
+        positivityIdx, heroes, conclusion, okWordsCount,
+        badWordsCount,
     ]);
 }
 
@@ -135,25 +137,27 @@ async function main() {
 
         const tags = text.match(TAGS_REGEXP) || [];
 
+        const processedText = processText(text);
+
         let _okWords = [];
         let _badWords = [];
         const _heroes = new Map();
 
-        identifyOkAndBadWords(text, okWords, badWords, _okWords, _badWords);
-        identifyHeroes(text, heroNames, _heroes);
+        identifyOkAndBadWords(processedText, okWords, badWords, _okWords, _badWords);
+        identifyHeroes(processedText, heroNames, _heroes);
 
         const positivityIdx = _okWords.length - _badWords.length;
 
         const conclusion = getConclusion(positivityIdx, _heroes);
 
-        // console.log(_heroes, _okWords, _badWords, conclusion, positivityIdx);
+        console.log(_heroes, _okWords, _badWords, conclusion, positivityIdx);
 
         await insertParsedData(pgClient,
-            title, text, revisionNo, revisionTs, comment,
+            title, processedText, revisionNo, revisionTs, comment,
             tags, processCategories(categories), _badWords.join(', '),
             _okWords.join(', '), positivityIdx,
             Array.from(_heroes.entries()).map(([k, v]) => `${k}:${v}`).join(', '),
-            conclusion,
+            conclusion, _okWords.length, _badWords.length,
         );
      
         node = result.iterateNext();
@@ -195,6 +199,14 @@ function processCategories(categories) {
     return categories
         .map((cats) => cats.replace(/[\]\[]/gi, '').split('Категория:').filter((c) => c.length))
         .join(', ');
+}
+
+function processText(text) {
+    return text.replace(/\n\r/gi, ' ')
+        .replace('/^\w\-/', ' ')
+        .replace(/\-\s/gi, ' ')
+        .replace(/\s\-/gi, ' ')
+        .replace(/\s{2,}/gi, ' ');
 }
 
 main().catch((err) => {

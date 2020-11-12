@@ -2,10 +2,9 @@ const xpath = require('xpath');
 const xmldom = require('xmldom');
 const path = require('path');
 const fs = require('fs');
-const pg = require('pg');
-const { howGoodTheArticle } = require('./how-good-the-article');
 
-require('dotenv').config();
+const { howGoodTheArticle } = require('./how-good-the-article');
+const { client } = require('./db');
 
 function aboutWhatHeroesTheArticle(heroes) {
     let n = 'unknown';
@@ -75,19 +74,11 @@ async function truncatePreviousParsed(client) {
 }
 
 const dataDir = 'docs';
-const xmlFileName = 'rufallout_pages_current_small.xml';
+const xmlFileName = '66eeafefeafe4caa1044e0d55600e022';
 
 const filepath = path.join(process.cwd(), dataDir, xmlFileName);
 
 const xmlParser = new xmldom.DOMParser();
-
-const pgClient = new pg.Client({
-    host: process.env.POSTGRES_HOST,
-    user: process.env.POSTGRES_USER,
-    password: process.env.POSTGRES_PASSWORD,
-    port: process.env.POSTGRES_PORT,
-    database: process.env.POSTGRES_DB,
-});
 
 async function main() {
 
@@ -99,19 +90,19 @@ async function main() {
 
     console.log(xmlFile.slice(0, 100), 'totalFileSize', processedXmlFile.length);
 
-    await pgClient.connect();
+    await client.connect();
 
-    await truncatePreviousParsed(pgClient);
+    await truncatePreviousParsed(client);
 
-    const okWords = await loadOkWords(pgClient);
-    const badWords = await loadBadWords(pgClient);
-    const heroNames = await loadHeroNames(pgClient);
+    const okWords = await loadOkWords(client);
+    const badWords = await loadBadWords(client);
+    const heroNames = await loadHeroNames(client);
 
     console.log('okWords', okWords)
     console.log('badWords', badWords);
     console.log('heroesNames', heroNames);
 
-    const PAGES_XPATH_EXPR = '//page';
+    const PAGES_XPATH_EXPR = 'page';
 
     const result = xpath.evaluate(
         PAGES_XPATH_EXPR,
@@ -125,6 +116,8 @@ async function main() {
     const TAGS_REGEXP = /^\[\[(.*)\]\]/gi;
 
     let node = result.iterateNext();
+
+    console.log('Node is', node);
 
     while (node) {
         const title = xpath.select1('string(title/text())', node);
@@ -152,18 +145,20 @@ async function main() {
 
         console.log(_heroes, _okWords, _badWords, conclusion, positivityIdx);
 
-        await insertParsedData(pgClient,
+        await insertParsedData(client,
             title, processedText, revisionNo, revisionTs, comment,
             tags, processCategories(categories), _badWords.join(', '),
             _okWords.join(', '), positivityIdx,
             Array.from(_heroes.entries()).map(([k, v]) => `${k}:${v}`).join(', '),
             conclusion, _okWords.length, _badWords.length,
         );
+
+        console.log('Ama there');
      
         node = result.iterateNext();
     }
 
-    await pgClient.end();
+    await client.end();
 }
 
 function identifyOkAndBadWords(text, okWordsIn, badWordsIn, okWordsOut, badWordsOut) {
@@ -211,4 +206,8 @@ function processText(text) {
 
 main().catch((err) => {
     console.error(err);
+
+    client.end().catch((err) => {
+        console.error(err);
+    });
 });

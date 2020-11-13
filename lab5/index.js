@@ -2,9 +2,15 @@ const xpath = require('xpath');
 const xmldom = require('xmldom');
 const path = require('path');
 const fs = require('fs');
+const sax = require('sax');
+const saxpath = require('saxpath');
+const xml2js = require('xml2js');
 
 const { howGoodTheArticle } = require('./how-good-the-article');
 const { client } = require('./db');
+
+const CATEGORIES_REGEXP = /\[\[Категория:[\s\S]+\]\]/gi;
+const TAGS_REGEXP = /^\[\[(.*)\]\]/gi;
 
 function aboutWhatHeroesTheArticle(heroes) {
     let n = 'unknown';
@@ -74,12 +80,76 @@ async function truncatePreviousParsed(client) {
 }
 
 const dataDir = 'docs';
-const xmlFileName = '66eeafefeafe4caa1044e0d55600e022';
+// const xmlFileName = 'rufallout_pages_current_small.xml';
+const xmlFileName = '66eeafefeafe4caa1044e0d55600e022.xml';
 
 const filepath = path.join(process.cwd(), dataDir, xmlFileName);
 
 const xmlParser = new xmldom.DOMParser();
 
+async function s() {
+
+    await client.connect();
+
+    const okWords = await loadOkWords(client);
+    const badWords = await loadBadWords(client);
+    const heroNames = await loadHeroNames(client);
+
+    const fileStream = fs.createReadStream(filepath);
+    const saxParser = sax.createStream(true);
+    const streamer = new saxpath.SaXPath(saxParser, '//page');
+
+    streamer.on('match', function(xml) {
+        xml2js.parseStringPromise(xml).then((d) => {
+            const title = d.page.title[0];
+            const text = d.page.revision[0].text[0]._ || '';
+
+            const revisionNo =  d.page.revision[0].id[0];
+            const revisionTs =  d.page.revision[0].timestamp[0]
+            const comment =  ((d.page.revision[0].comment) || [])[0] || '';
+
+            const categories = text.match(CATEGORIES_REGEXP) || [];
+
+            const tags = text.match(TAGS_REGEXP) || [];
+    
+            const processedText = processText(text);
+    
+            let _okWords = [];
+            let _badWords = [];
+            const _heroes = new Map();
+    
+            identifyOkAndBadWords(processedText, okWords, badWords, _okWords, _badWords);
+            identifyHeroes(processedText, heroNames, _heroes);
+    
+            const positivityIdx = _okWords.length - _badWords.length;
+    
+            const conclusion = getConclusion(positivityIdx, _heroes);
+    
+            // console.log(_heroes, _okWords, _badWords, conclusion, positivityIdx);
+    
+            insertParsedData(client,
+                title, processedText, revisionNo, revisionTs, comment,
+                tags, processCategories(categories), _badWords.join(', '),
+                _okWords.join(', '), positivityIdx,
+                Array.from(_heroes.entries()).map(([k, v]) => `${k}:${v}`).join(', '),
+                conclusion, _okWords.length, _badWords.length,
+            ).then(() => {
+                console.log(revisionNo, ' wrote');
+            }).catch((err) => {
+                console.error(err);
+            });
+        });
+    });
+
+    fileStream.pipe(saxParser);
+}
+
+// Dlya big razmera
+// s().catch(err => {
+//     console.error(err);
+// });
+
+// Dlya small razmera
 async function main() {
 
     const xmlFile = await fs.promises.readFile(filepath,{ encoding: 'utf-8' });
@@ -102,7 +172,7 @@ async function main() {
     console.log('badWords', badWords);
     console.log('heroesNames', heroNames);
 
-    const PAGES_XPATH_EXPR = 'page';
+    const PAGES_XPATH_EXPR = '//page';
 
     const result = xpath.evaluate(
         PAGES_XPATH_EXPR,
@@ -111,9 +181,6 @@ async function main() {
         xpath.XPathResult.ANY_TYPE,
         null,
     );
-
-    const CATEGORIES_REGEXP = /\[\[Категория:[\s\S]+\]\]/gi;
-    const TAGS_REGEXP = /^\[\[(.*)\]\]/gi;
 
     let node = result.iterateNext();
 
@@ -153,8 +220,6 @@ async function main() {
             conclusion, _okWords.length, _badWords.length,
         );
 
-        console.log('Ama there');
-     
         node = result.iterateNext();
     }
 

@@ -25,9 +25,7 @@ async function loadParsedArticles(client) {
 
 function filterGraph(g) {
     for (const [name, links] of g.entries()) {
-        // name: Gul, ego map
         for (const [lName, count] of links.entries()) {
-            // lName: Shablonclar, count: 1
             const reverse = g.get(lName);
             if (reverse) {
                 const reverseLinksCount = reverse.get(name);
@@ -62,9 +60,15 @@ async function main() {
                 return;
             }
 
-            const linkRegExp = new RegExp(`\[\[${a.title.replace('-', '\\-')}\]\]`, 'gi');
-            // test links
-            const l = a.txt.match(linkRegExp) || [];
+            const linkRegExp = new RegExp(`\[\[${a.title.replace(/-/gi, '\\-')}\]\]`, 'gi');
+
+            let l;
+            try {
+                l = a.txt.match(linkRegExp) || [];
+            } catch (err) {
+                l = [];
+            }
+            
 
             if (l.length) {
                 links.set(a.title, l.length);
@@ -78,7 +82,7 @@ async function main() {
 
     const d = g.to_dot();
 
-    await fs.promises.writeFile('./test02.txt', d);
+    await fs.promises.writeFile('./testLarge.txt', d);
 }
 
 main()

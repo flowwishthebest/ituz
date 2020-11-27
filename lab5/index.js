@@ -80,8 +80,8 @@ async function truncatePreviousParsed(client) {
 }
 
 const dataDir = 'docs';
-// const xmlFileName = 'rufallout_pages_current_small.xml';
-const xmlFileName = '66eeafefeafe4caa1044e0d55600e022.xml';
+const xmlFileName = 'rufallout_pages_current_small.xml';
+// const xmlFileName = '66eeafefeafe4caa1044e0d55600e022.xml';
 
 const filepath = path.join(process.cwd(), dataDir, xmlFileName);
 
